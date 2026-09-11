@@ -9,6 +9,8 @@ on:
 jobs:
   signin:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -62,3 +64,13 @@ jobs:
       - name: 清理凭证
         if: always()
         run: rm -rf auths
+
+      - name: keepalive
+        if: always()
+        run: |
+          git config user.name "trae-signin-bot"
+          git config user.email "bot@users.noreply.github.com"
+          echo "last run: $(date -u)" > KEEPALIVE.md
+          git add KEEPALIVE.md
+          git diff --cached --quiet || git commit -m "chore: keepalive $(date -u +%Y-%m-%d)"
+          git push
