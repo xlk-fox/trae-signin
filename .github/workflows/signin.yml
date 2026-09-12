@@ -2,9 +2,10 @@ name: TRAE 每日签到
 
 on:
   schedule:
-    # 每天 UTC 05:37 = 北京时间 13:37
-    # 故意避开早上 8 点整的高峰（那时 TRAE 会限流拒绝签到）
+    # 北京时间 13:37（午后，避开早上 8 点的签到高峰）
     - cron: '37 5 * * *'
+    # 北京时间 21:37（晚间再补一次，双保险）
+    - cron: '37 13 * * *'
   workflow_dispatch:
 
 jobs:
@@ -29,18 +30,18 @@ jobs:
           mkdir -p auths
           echo '${{ secrets.TRAE_AUTH_1 }}' > auths/trae-1.json
 
-      - name: 执行签到（遇限流自动重试）
+      - name: 执行签到（限流自动重试）
         run: |
           for i in 1 2 3 4 5 6; do
             OUTPUT=$(./signin_bin auths 2>&1)
             echo "--- 第 $i 次尝试 ---"
             echo "$OUTPUT"
-            if echo "$OUTPUT" | grep -q "失败=0"; then
-              echo "签到成功，结束"
+            if echo "$OUTPUT" | grep -qE '签到成功=[1-9]|已签=[1-9]'; then
+              echo "确认签到成功，结束"
               break
             fi
-            echo "未成功（大概率是 TRAE 限流），4 分钟后重试"
-            sleep 240
+            echo "未确认成功（多半是 TRAE 限流），3 分钟后重试"
+            sleep 180
           done
           echo "SIGNIN_OUTPUT<<EOF" >> $GITHUB_ENV
           echo "$OUTPUT" >> $GITHUB_ENV
@@ -54,10 +55,14 @@ jobs:
           echo "$SIGNIN_OUTPUT" | grep -oP '已签=\K\d+' | head -1 | xargs -I{} echo "already={}" >> $GITHUB_OUTPUT || echo "already=?" >> $GITHUB_OUTPUT
           echo "$SIGNIN_OUTPUT" | grep -oP '失败=\K\d+' | head -1 | xargs -I{} echo "fail={}" >> $GITHUB_OUTPUT || echo "fail=?" >> $GITHUB_OUTPUT
 
-      - name: 失败则报错提醒
-        if: steps.result.outputs.fail != '0' && steps.result.outputs.fail != '?'
+      - name: 今日已签过（重复运行，正常）
+        if: steps.result.outputs.ok == '0' && steps.result.outputs.already != '0'
+        run: echo "今天已经签到过了，这次是重复运行，无需处理"
+
+      - name: 仍未签到成功则报错
+        if: steps.result.outputs.ok == '0' && steps.result.outputs.already == '0'
         run: |
-          echo "::error::签到失败，重试 6 次仍未成功（多半是 TRAE 限流）"
+          echo "::error::签到未成功，已重试 6 次（大概率 TRAE 限流）"
           exit 1
 
       - name: 清理凭证
