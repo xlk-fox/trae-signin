@@ -2,7 +2,7 @@ name: TRAE 每日签到
 
 on:
   schedule:
-    # 北京时间 13:37（午后，避开早上 8 点的签到高峰）
+    # 北京时间 13:37（午后，避开早高峰）
     - cron: '37 5 * * *'
     # 北京时间 21:37（晚间再补一次，双保险）
     - cron: '37 13 * * *'
@@ -30,40 +30,43 @@ jobs:
           mkdir -p auths
           echo '${{ secrets.TRAE_AUTH_1 }}' > auths/trae-1.json
 
-      - name: 执行签到（限流自动重试）
+      - name: 执行签到（每次都向 TRAE 核实真实状态）
         run: |
-          for i in 1 2 3 4 5 6; do
-            OUTPUT=$(./signin_bin auths 2>&1)
-            echo "--- 第 $i 次尝试 ---"
-            echo "$OUTPUT"
-            if echo "$OUTPUT" | grep -qE '签到成功=[1-9]|已签=[1-9]'; then
-              echo "确认签到成功，结束"
+          TOKEN=$(python3 -c "import json;print(json.load(open('auths/trae-1.json'))['auth']['accessToken'])")
+          DEV=$(python3 -c "import json;print(json.load(open('auths/trae-1.json'))['auth']['deviceId'])")
+          for i in 1 2 3 4 5 6 7 8; do
+            echo "=== 第 $i 次尝试 ==="
+            ./signin_bin auths 2>&1 || true
+            ST=$(curl -s -X POST 'https://api.trae.cn/trae/api/v2/ug/checkin_credits/status' \
+              -H "Authorization: Cloud-IDE-JWT $TOKEN" \
+              -H "X-User-Region: CN" \
+              -H "X-Device-Id: $DEV" \
+              -H 'Content-Type: application/json' \
+              -d '{}')
+            echo "TRAE 真实状态: $ST"
+            if echo "$ST" | grep -qE '"checked_in"[[:space:]]*:[[:space:]]*true'; then
+              echo "已确认签到成功"
               break
             fi
-            echo "未确认成功（多半是 TRAE 限流），3 分钟后重试"
+            echo "实际仍未签到（大概率是 TRAE 限流），3 分钟后重试"
             sleep 180
           done
-          echo "SIGNIN_OUTPUT<<EOF" >> $GITHUB_ENV
-          echo "$OUTPUT" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
 
-      - name: 提取结果
-        id: result
+      - name: 最终核实（没签到就报错标红）
         run: |
-          echo "$SIGNIN_OUTPUT" | grep -oP '总计=\K\d+' | head -1 | xargs -I{} echo "total={}" >> $GITHUB_OUTPUT || echo "total=?" >> $GITHUB_OUTPUT
-          echo "$SIGNIN_OUTPUT" | grep -oP '签到成功=\K\d+' | head -1 | xargs -I{} echo "ok={}" >> $GITHUB_OUTPUT || echo "ok=?" >> $GITHUB_OUTPUT
-          echo "$SIGNIN_OUTPUT" | grep -oP '已签=\K\d+' | head -1 | xargs -I{} echo "already={}" >> $GITHUB_OUTPUT || echo "already=?" >> $GITHUB_OUTPUT
-          echo "$SIGNIN_OUTPUT" | grep -oP '失败=\K\d+' | head -1 | xargs -I{} echo "fail={}" >> $GITHUB_OUTPUT || echo "fail=?" >> $GITHUB_OUTPUT
-
-      - name: 今日已签过（重复运行，正常）
-        if: steps.result.outputs.ok == '0' && steps.result.outputs.already != '0'
-        run: echo "今天已经签到过了，这次是重复运行，无需处理"
-
-      - name: 仍未签到成功则报错
-        if: steps.result.outputs.ok == '0' && steps.result.outputs.already == '0'
-        run: |
-          echo "::error::签到未成功，已重试 6 次（大概率 TRAE 限流）"
-          exit 1
+          TOKEN=$(python3 -c "import json;print(json.load(open('auths/trae-1.json'))['auth']['accessToken'])")
+          DEV=$(python3 -c "import json;print(json.load(open('auths/trae-1.json'))['auth']['deviceId'])")
+          ST=$(curl -s -X POST 'https://api.trae.cn/trae/api/v2/ug/checkin_credits/status' \
+            -H "Authorization: Cloud-IDE-JWT $TOKEN" \
+            -H "X-User-Region: CN" \
+            -H "X-Device-Id: $DEV" \
+            -H 'Content-Type: application/json' \
+            -d '{}')
+          echo "最终状态: $ST"
+          if ! echo "$ST" | grep -qE '"checked_in"[[:space:]]*:[[:space:]]*true'; then
+            echo "::error::重试 8 次后仍未签到成功"
+            exit 1
+          fi
 
       - name: 清理凭证
         if: always()
